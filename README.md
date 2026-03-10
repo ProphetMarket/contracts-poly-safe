@@ -10,7 +10,9 @@ Isolated from the main `contracts/` project to pin the compiler to **solc 0.8.4*
 |------|-------------|
 | `src/PolySafeProxyFactory.sol` | Vendored SafeProxyFactory from [Polymarket/proxy-factories](https://github.com/Polymarket/proxy-factories) |
 | `src/Deps.sol` | Force-compiles Safe v1.3 artifacts needed for deployment (GnosisSafeL2, CompatibilityFallbackHandler) |
+| `script/DeployPolySafeFactory.s.sol` | Idempotent deploy script for GnosisSafeL2 singleton, CompatibilityFallbackHandler, and SafeProxyFactory |
 | `test/PolySafeProxyFactory.t.sol` | Smoke tests for factory construction and deterministic address computation |
+| `test/DeployPolySafeFactory.t.sol` | Deploy script tests: fresh deployment, idempotency, and mainnet guard |
 
 ## Dependencies
 
