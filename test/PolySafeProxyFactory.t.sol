@@ -108,6 +108,29 @@ contract PolySafeProxyFactoryTest is Test {
         assertEq(address(uint160(uint256(stored))), address(fallbackHandler), "Fallback handler not set on Safe");
     }
 
+    // ── 3.2 (UC-0PLQ-002/3.2): Salt derivation cross-verification ──
+
+    /// @dev Verifies keccak256(abi.encode(addr)) produces known salt values.
+    ///      The expected hashes here are the source of truth for the Go-side
+    ///      TestSaltDerivation_MatchesSolidity test in safe_test.go.
+    function test_SaltDerivation_KnownVectors() public {
+        assertEq(
+            keccak256(abi.encode(address(0x1234567890AbcdEF1234567890aBcdef12345678))),
+            bytes32(0x9f28962a951b1cd243ff17e7db040d5966c242cce64c6d2d7c4e5e985dbc0389),
+            "salt mismatch for 0x1234...5678"
+        );
+        assertEq(
+            keccak256(abi.encode(address(0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF))),
+            bytes32(0xc4b19c94482ce57afc842306f3696b8839c9bb4bab0e205987ceb6c7017d8571),
+            "salt mismatch for 0xDEAD...BeeF"
+        );
+        assertEq(
+            keccak256(abi.encode(address(0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa))),
+            bytes32(0xbc3e28998ce6b79c3c484e5137a150bab7450bb50428affa478afb88cafd2f65),
+            "salt mismatch for 0xAAAA...AAAA"
+        );
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     /// @dev Deploys a Safe for signer and asserts the address matches computeProxyAddress.
