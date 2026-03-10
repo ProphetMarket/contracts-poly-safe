@@ -1,14 +1,22 @@
 // SPDX-License-Identifier: MIT
-pragma solidity >=0.7.0 <0.9.0;
+pragma solidity 0.8.4;
 
 import {Test} from "forge-std/Test.sol";
 import {SafeProxyFactory} from "../src/PolySafeProxyFactory.sol";
 import {GnosisSafeL2} from "@gnosis.pm/safe-contracts/contracts/GnosisSafeL2.sol";
+import {GnosisSafe} from "@gnosis.pm/safe-contracts/contracts/GnosisSafe.sol";
 import {
     CompatibilityFallbackHandler
 } from "@gnosis.pm/safe-contracts/contracts/handler/CompatibilityFallbackHandler.sol";
 
 contract PolySafeProxyFactoryTest is Test {
+    /// @dev The proxyCreationCode constant from PolySafeLib.sol (contracts/lib/ctf-exchange/).
+    ///      This is the source of truth for address derivation across the entire system.
+    ///      Copied here because direct cross-project Solidity import is not possible.
+    ///      Source of truth: contracts/lib/ctf-exchange/src/exchange/libraries/PolySafeLib.sol
+    bytes internal constant POLY_SAFE_LIB_PROXY_CREATION_CODE =
+        hex"608060405234801561001057600080fd5b5060405161017138038061017183398101604081905261002f916100b9565b6001600160a01b0381166100945760405162461bcd60e51b815260206004820152602260248201527f496e76616c69642073696e676c65746f6e20616464726573732070726f766964604482015261195960f21b606482015260840160405180910390fd5b600080546001600160a01b0319166001600160a01b03929092169190911790556100e7565b6000602082840312156100ca578081fd5b81516001600160a01b03811681146100e0578182fd5b9392505050565b607c806100f56000396000f3fe6080604052600080546001600160a01b0316813563530ca43760e11b1415602857808252602082f35b3682833781823684845af490503d82833e806041573d82fd5b503d81f3fea264697066735822122004356d37e05102655be65c4848223c2cf91f2f887bb3aaf1c0ebaa8a5130562f64736f6c63430008040033";
+
     SafeProxyFactory factory;
     GnosisSafeL2 singleton;
     CompatibilityFallbackHandler fallbackHandler;
@@ -18,6 +26,8 @@ contract PolySafeProxyFactoryTest is Test {
         fallbackHandler = new CompatibilityFallbackHandler();
         factory = new SafeProxyFactory(address(singleton), address(fallbackHandler));
     }
+
+    // ── Smoke tests ──────────────────────────────────────────────────
 
     function test_MasterCopyIsSet() public {
         assertEq(factory.masterCopy(), address(singleton));
@@ -46,5 +56,84 @@ contract PolySafeProxyFactoryTest is Test {
         address addr1 = factory.computeProxyAddress(user1);
         address addr2 = factory.computeProxyAddress(user2);
         assertFalse(addr1 == addr2, "different users should get different Safe addresses");
+    }
+
+    // ── 3.1: Bytecode match ─────────────────────────────────────────
+
+    function test_ProxyCreationCodeMatchesPolySafeLib() public {
+        bytes memory factoryCode = factory.proxyCreationCode();
+        assertEq(
+            keccak256(factoryCode),
+            keccak256(POLY_SAFE_LIB_PROXY_CREATION_CODE),
+            "factory.proxyCreationCode() must match PolySafeLib.sol constant byte-for-byte"
+        );
+    }
+
+    // ── 3.2: Deploy Safe, verify address derivation ─────────────────
+
+    function test_DeploySafe_AddressMatchesComputeProxyAddress() public {
+        (address signer, uint256 signerKey) = makeAddrAndKey("signer1");
+        address predicted = factory.computeProxyAddress(signer);
+
+        _deployProxy(signerKey);
+
+        // Verify code was deployed at the predicted address
+        assertTrue(predicted.code.length > 0, "Safe should be deployed at predicted address");
+
+        // Verify the Safe is owned by the signer
+        address[] memory owners = GnosisSafe(payable(predicted)).getOwners();
+        assertEq(owners.length, 1, "Safe should have exactly one owner");
+        assertEq(owners[0], signer, "Safe owner should be the signer");
+    }
+
+    function test_DeploySafe_ThreeEOAs() public {
+        (address alice, uint256 aliceKey) = makeAddrAndKey("alice");
+        (address bob, uint256 bobKey) = makeAddrAndKey("bob");
+        (address charlie, uint256 charlieKey) = makeAddrAndKey("charlie");
+
+        _assertDeployMatchesPredicted(alice, aliceKey, "alice");
+        _assertDeployMatchesPredicted(bob, bobKey, "bob");
+        _assertDeployMatchesPredicted(charlie, charlieKey, "charlie");
+    }
+
+    function test_DeploySafe_FallbackHandlerIsSet() public {
+        (, uint256 signerKey) = makeAddrAndKey("signer-fb");
+        address predicted = factory.computeProxyAddress(vm.addr(signerKey));
+
+        _deployProxy(signerKey);
+
+        // Slot for fallback handler in Safe v1.3: keccak256("fallback_manager.handler.address")
+        bytes32 slot = 0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5;
+        bytes32 stored = vm.load(predicted, slot);
+        assertEq(address(uint160(uint256(stored))), address(fallbackHandler), "Fallback handler not set on Safe");
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────
+
+    /// @dev Deploys a Safe for signer and asserts the address matches computeProxyAddress.
+    function _assertDeployMatchesPredicted(address signer, uint256 signerKey, string memory label) internal {
+        address predicted = factory.computeProxyAddress(signer);
+        _deployProxy(signerKey);
+        assertTrue(predicted.code.length > 0, label);
+        address[] memory owners = GnosisSafe(payable(predicted)).getOwners();
+        assertEq(owners.length, 1);
+        assertEq(owners[0], signer);
+    }
+
+    /// @dev Signs a CreateProxy EIP-712 message and calls factory.createProxy().
+    function _deployProxy(uint256 signerKey) internal {
+        // No payment for tests
+        address paymentToken = address(0);
+        uint256 payment = 0;
+        address payable paymentReceiver = payable(address(0));
+
+        // Construct EIP-712 digest
+        bytes32 structHash =
+            keccak256(abi.encode(factory.CREATE_PROXY_TYPEHASH(), paymentToken, payment, paymentReceiver));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", factory.domainSeparator(), structHash));
+
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, digest);
+
+        factory.createProxy(paymentToken, payment, paymentReceiver, SafeProxyFactory.Sig(v, r, s));
     }
 }
