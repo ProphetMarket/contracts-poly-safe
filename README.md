@@ -98,8 +98,8 @@ forge script script/DeployPolySafeFactory.s.sol \
 After deployment, record the three addresses in `.env.dev` and `.env.test`:
 
 ```shell
-POLY_SAFE_FACTORY_ADDRESS=0x...    # SafeProxyFactory
-POLY_SAFE_SINGLETON_ADDRESS=0x...  # GnosisSafeL2
+SAFE_FACTORY_ADDRESS=0x...    # SafeProxyFactory
+SAFE_SINGLETON_ADDRESS=0x...  # GnosisSafeL2
 ```
 
 Then update the CTF Exchange to use the new factory:
