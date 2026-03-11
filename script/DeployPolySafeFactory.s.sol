@@ -8,14 +8,17 @@ import {GnosisSafeL2} from "@gnosis.pm/safe-contracts/contracts/GnosisSafeL2.sol
 import {
     CompatibilityFallbackHandler
 } from "@gnosis.pm/safe-contracts/contracts/handler/CompatibilityFallbackHandler.sol";
+import {MultiSend} from "@gnosis.pm/safe-contracts/contracts/libraries/MultiSend.sol";
 
 /// @param deployedSingleton        Pre-deployed GnosisSafeL2 (address(0) = deploy fresh)
 /// @param deployedFallbackHandler  Pre-deployed CompatibilityFallbackHandler (address(0) = deploy fresh)
 /// @param deployedFactory          Pre-deployed SafeProxyFactory (address(0) = deploy fresh)
+/// @param deployedMultiSend        Pre-deployed MultiSend (address(0) = deploy fresh)
 struct DeployConfig {
     address deployedSingleton;
     address deployedFallbackHandler;
     address deployedFactory;
+    address deployedMultiSend;
 }
 
 /// @title DeployPolySafeFactory
@@ -35,6 +38,7 @@ contract DeployPolySafeFactory is Script {
     address public deployedSingleton;
     address public deployedFallbackHandler;
     address public deployedFactory;
+    address public deployedMultiSend;
 
     error MainnetNotSupported();
 
@@ -69,7 +73,8 @@ contract DeployPolySafeFactory is Script {
         return DeployConfig({
             deployedSingleton: _envAddress("DEPLOYED_SINGLETON"),
             deployedFallbackHandler: _envAddress("DEPLOYED_FALLBACK_HANDLER"),
-            deployedFactory: _envAddress("DEPLOYED_POLY_SAFE_FACTORY")
+            deployedFactory: _envAddress("DEPLOYED_POLY_SAFE_FACTORY"),
+            deployedMultiSend: _envAddress("DEPLOYED_MULTI_SEND")
         });
     }
 
@@ -81,16 +86,19 @@ contract DeployPolySafeFactory is Script {
         address singleton = _deploySingleton(cfg.deployedSingleton);
         address fallbackHandler = _deployFallbackHandler(cfg.deployedFallbackHandler);
         address factory = _deployFactory(singleton, fallbackHandler, cfg.deployedFactory);
+        address multiSend = _deployMultiSend(cfg.deployedMultiSend);
 
         deployedSingleton = singleton;
         deployedFallbackHandler = fallbackHandler;
         deployedFactory = factory;
+        deployedMultiSend = multiSend;
 
         console.log("");
         console.log("=== Deployment Summary ===");
         console.log("GnosisSafeL2 singleton:       ", singleton);
         console.log("CompatibilityFallbackHandler: ", fallbackHandler);
         console.log("SafeProxyFactory:             ", factory);
+        console.log("MultiSend:                    ", multiSend);
     }
 
     // ── Individual deployers ────────────────────────────────────────
@@ -126,6 +134,17 @@ contract DeployPolySafeFactory is Script {
         SafeProxyFactory factory = new SafeProxyFactory(singleton, fallbackHandler);
         console.log("[DEPLOYED] SafeProxyFactory at", address(factory));
         return address(factory);
+    }
+
+    function _deployMultiSend(address existing) internal returns (address) {
+        if (_isDeployed(existing)) {
+            console.log("[SKIP] MultiSend already deployed at", existing);
+            return existing;
+        }
+
+        MultiSend ms = new MultiSend();
+        console.log("[DEPLOYED] MultiSend at", address(ms));
+        return address(ms);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────

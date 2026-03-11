@@ -8,6 +8,7 @@ import {GnosisSafeL2} from "@gnosis.pm/safe-contracts/contracts/GnosisSafeL2.sol
 import {
     CompatibilityFallbackHandler
 } from "@gnosis.pm/safe-contracts/contracts/handler/CompatibilityFallbackHandler.sol";
+import {MultiSend} from "@gnosis.pm/safe-contracts/contracts/libraries/MultiSend.sol";
 
 contract DeployPolySafeFactoryTest is Test {
     DeployPolySafeFactory public deployScript;
@@ -19,20 +20,23 @@ contract DeployPolySafeFactoryTest is Test {
     }
 
     function _emptyConfig() internal pure returns (DeployConfig memory) {
-        return
-            DeployConfig({
-                deployedSingleton: address(0), deployedFallbackHandler: address(0), deployedFactory: address(0)
-            });
+        return DeployConfig({
+            deployedSingleton: address(0),
+            deployedFallbackHandler: address(0),
+            deployedFactory: address(0),
+            deployedMultiSend: address(0)
+        });
     }
 
     // ── Fresh deployment ────────────────────────────────────────────
 
-    function test_DeploysAllThreeContracts() public {
+    function test_DeploysAllContracts() public {
         deployScript.run(deployer, _emptyConfig());
 
         assertTrue(deployScript.deployedSingleton() != address(0), "Singleton not deployed");
         assertTrue(deployScript.deployedFallbackHandler() != address(0), "FallbackHandler not deployed");
         assertTrue(deployScript.deployedFactory() != address(0), "Factory not deployed");
+        assertTrue(deployScript.deployedMultiSend() != address(0), "MultiSend not deployed");
     }
 
     function test_FactoryPointsToSingleton() public {
@@ -101,10 +105,13 @@ contract DeployPolySafeFactoryTest is Test {
         CompatibilityFallbackHandler handler = new CompatibilityFallbackHandler();
         SafeProxyFactory factory = new SafeProxyFactory(address(singleton), address(handler));
 
+        MultiSend multiSend = new MultiSend();
+
         DeployConfig memory cfg = DeployConfig({
             deployedSingleton: address(singleton),
             deployedFallbackHandler: address(handler),
-            deployedFactory: address(factory)
+            deployedFactory: address(factory),
+            deployedMultiSend: address(multiSend)
         });
 
         deployScript.run(deployer, cfg);
@@ -112,5 +119,6 @@ contract DeployPolySafeFactoryTest is Test {
         assertEq(deployScript.deployedSingleton(), address(singleton));
         assertEq(deployScript.deployedFallbackHandler(), address(handler));
         assertEq(deployScript.deployedFactory(), address(factory));
+        assertEq(deployScript.deployedMultiSend(), address(multiSend));
     }
 }
