@@ -95,10 +95,13 @@ contract DeployPolySafeFactory is Script {
 
         console.log("");
         console.log("=== Deployment Summary ===");
-        console.log("GnosisSafeL2 singleton:       ", singleton);
-        console.log("CompatibilityFallbackHandler: ", fallbackHandler);
-        console.log("SafeProxyFactory:             ", factory);
-        console.log("MultiSend:                    ", multiSend);
+        console.log("");
+        console.log("Copy-paste these into your shell:");
+        console.log("");
+        console.log(string(abi.encodePacked("export SAFE_SINGLETON_ADDRESS=", vm.toString(singleton))));
+        console.log(string(abi.encodePacked("export FALLBACK_HANDLER_ADDRESS=", vm.toString(fallbackHandler))));
+        console.log(string(abi.encodePacked("export SAFE_FACTORY_ADDRESS=", vm.toString(factory))));
+        console.log(string(abi.encodePacked("export MULTI_SEND_ADDRESS=", vm.toString(multiSend))));
     }
 
     // ── Individual deployers ────────────────────────────────────────
