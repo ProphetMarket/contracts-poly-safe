@@ -27,7 +27,7 @@ contract SafeProxyFactory {
     bytes32 public constant CREATE_PROXY_TYPEHASH =
         keccak256("CreateProxy(address paymentToken,uint256 payment,address paymentReceiver)");
 
-    string public constant NAME = "Polymarket Contract Proxy Factory";
+    string public constant NAME = "Prophet Market Proxy Factory";
 
     /* STRUCTS */
 
