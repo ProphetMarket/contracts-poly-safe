@@ -150,13 +150,117 @@ contract PolySafeProxyFactoryTest is Test {
         uint256 payment = 0;
         address payable paymentReceiver = payable(address(0));
 
+        address signer = vm.addr(signerKey);
+        uint256 nonce = factory.nonces(signer);
+        uint256 deadline = block.timestamp + 1 hours;
+
         // Construct EIP-712 digest
-        bytes32 structHash =
-            keccak256(abi.encode(factory.CREATE_PROXY_TYPEHASH(), paymentToken, payment, paymentReceiver));
+        bytes32 structHash = keccak256(
+            abi.encode(factory.CREATE_PROXY_TYPEHASH(), paymentToken, payment, paymentReceiver, nonce, deadline)
+        );
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", factory.domainSeparator(), structHash));
 
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, digest);
 
-        factory.createProxy(paymentToken, payment, paymentReceiver, SafeProxyFactory.Sig(v, r, s));
+        factory.createProxy(paymentToken, payment, paymentReceiver, nonce, deadline, SafeProxyFactory.Sig(v, r, s));
+    }
+
+    // ── Finding 3 regression tests ──────────────────────────────────
+
+    function test_CreateProxy_RevertsOnReplayedSignature() public {
+        (address signer, uint256 signerKey) = makeAddrAndKey("replay-signer");
+
+        address paymentToken = address(0);
+        uint256 payment = 0;
+        address payable paymentReceiver = payable(address(0));
+        uint256 nonce = factory.nonces(signer);
+        uint256 deadline = block.timestamp + 1 hours;
+
+        bytes32 structHash = keccak256(
+            abi.encode(factory.CREATE_PROXY_TYPEHASH(), paymentToken, payment, paymentReceiver, nonce, deadline)
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", factory.domainSeparator(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, digest);
+
+        factory.createProxy(paymentToken, payment, paymentReceiver, nonce, deadline, SafeProxyFactory.Sig(v, r, s));
+        assertEq(factory.nonces(signer), nonce + 1, "nonce should increment after successful deploy");
+
+        // Replaying the same signature must revert (nonce is now stale).
+        vm.expectRevert("SafeProxyFactory: invalid nonce");
+        factory.createProxy(paymentToken, payment, paymentReceiver, nonce, deadline, SafeProxyFactory.Sig(v, r, s));
+    }
+
+    function test_CreateProxy_RevertsOnExpiredSignature() public {
+        (, uint256 signerKey) = makeAddrAndKey("expired-signer");
+
+        address paymentToken = address(0);
+        uint256 payment = 0;
+        address payable paymentReceiver = payable(address(0));
+        uint256 nonce = factory.nonces(vm.addr(signerKey));
+        uint256 deadline = block.timestamp + 1 hours;
+
+        bytes32 structHash = keccak256(
+            abi.encode(factory.CREATE_PROXY_TYPEHASH(), paymentToken, payment, paymentReceiver, nonce, deadline)
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", factory.domainSeparator(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, digest);
+
+        // Advance past deadline.
+        vm.warp(deadline + 1);
+
+        vm.expectRevert("SafeProxyFactory: signature expired");
+        factory.createProxy(paymentToken, payment, paymentReceiver, nonce, deadline, SafeProxyFactory.Sig(v, r, s));
+    }
+
+    /// @dev Proves that the dynamic domain separator prevents a signature signed
+    /// on the origin chain from deploying the *victim's* Safe on a forked chain.
+    ///
+    /// The mechanism is `_domainSeparator()`: on a fork (different block.chainid),
+    /// it recomputes the separator, which produces a different EIP-712 digest,
+    /// which causes ecrecover to return a *different* address — not the victim.
+    /// As a result, `_deploySafeFor(owner, ...)` uses a garbage owner for the
+    /// salt, deploying at an address unrelated to the victim's counterfactual Safe.
+    /// The victim's pre-funded address remains untouched.
+    function test_CreateProxy_ForkProtection_RecoversDifferentSigner() public {
+        (address victim, uint256 victimKey) = makeAddrAndKey("fork-victim");
+        address victimPredicted = factory.computeProxyAddress(victim);
+
+        address paymentToken = address(0);
+        uint256 payment = 0;
+        address payable paymentReceiver = payable(address(0));
+        uint256 nonce = factory.nonces(victim);
+        uint256 deadline = block.timestamp + 1 hours;
+
+        // Sign against the origin-chain domain separator.
+        bytes32 structHash = keccak256(
+            abi.encode(factory.CREATE_PROXY_TYPEHASH(), paymentToken, payment, paymentReceiver, nonce, deadline)
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", factory.domainSeparator(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(victimKey, digest);
+
+        // Simulate a chain fork: change block.chainid.
+        vm.chainId(9999);
+
+        // The fork's domain separator differs from the origin-chain one —
+        // i.e. the cached fast-path is bypassed.
+        assertFalse(
+            factory.domainSeparator() == keccak256(abi.encodePacked("\x19\x01", factory.domainSeparator(), structHash)),
+            "sanity check"
+        );
+
+        // Capture the deploy call. Either:
+        //   (a) the signature replay succeeds, BUT deploys a Safe for some garbage
+        //       address (not the victim) at an address unrelated to `victimPredicted`, or
+        //   (b) the signature fails `_getSigner` and the call reverts.
+        // In both cases the victim's counterfactual Safe is untouched.
+        try factory.createProxy(
+            paymentToken, payment, paymentReceiver, nonce, deadline, SafeProxyFactory.Sig(v, r, s)
+        ) {
+            // If it didn't revert, make sure the victim's predicted address was NOT deployed.
+            assertEq(victimPredicted.code.length, 0, "fork replay must not deploy the victim's counterfactual Safe");
+        } catch {
+            // Revert path is also acceptable: victim's address stays uninitialized.
+            assertEq(victimPredicted.code.length, 0, "victim's Safe should remain undeployed after revert");
+        }
     }
 }

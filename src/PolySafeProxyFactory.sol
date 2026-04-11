@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Vendored from: https://github.com/Polymarket/proxy-factories
 // Package: packages/safe-factory/contracts/SafeProxyFactory.sol
+//
+// Hardened for Prophet Market per audit Finding 3:
+//   - CreateProxy signatures carry a per-signer nonce (non-replayable, revocable)
+//   - CreateProxy signatures carry a deadline (expire automatically)
+//   - Domain separator is recomputed at runtime when block.chainid changes,
+//     so signatures cannot be replayed across chain forks.
 
 pragma solidity >=0.7.0 <0.9.0;
 
@@ -17,17 +23,30 @@ contract SafeProxyFactory {
 
     /* EIP712 */
 
-    bytes32 public domainSeparator;
-
-    // The EIP-712 typehash for the contract's domain
+    // The EIP-712 typehash for the contract's domain.
+    // Includes `version` per standard EIP-712 practice (OpenZeppelin EIP712 base).
     bytes32 public constant DOMAIN_TYPEHASH =
-        keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)");
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
 
-    // The EIP-712 typehash for the deposit id struct
-    bytes32 public constant CREATE_PROXY_TYPEHASH =
-        keccak256("CreateProxy(address paymentToken,uint256 payment,address paymentReceiver)");
+    // The EIP-712 typehash for the CreateProxy struct.
+    // Includes `nonce` (per-signer counter) and `deadline` (expiry timestamp)
+    // so signatures are non-replayable and bounded in time.
+    bytes32 public constant CREATE_PROXY_TYPEHASH = keccak256(
+        "CreateProxy(address paymentToken,uint256 payment,address paymentReceiver,uint256 nonce,uint256 deadline)"
+    );
 
     string public constant NAME = "Prophet Market Proxy Factory";
+
+    string public constant VERSION = "1";
+
+    /// @notice Per-signer nonce for CreateProxy signatures. Increments on every
+    /// successful `createProxy` call so a signature cannot be replayed.
+    mapping(address => uint256) public nonces;
+
+    // Cached domain separator computed at deploy time. Valid only while
+    // block.chainid matches `_CACHED_CHAIN_ID`; otherwise recomputed on read.
+    uint256 private immutable _CACHED_CHAIN_ID;
+    bytes32 private immutable _CACHED_DOMAIN_SEPARATOR;
 
     /* STRUCTS */
 
@@ -43,8 +62,15 @@ contract SafeProxyFactory {
         masterCopy = _masterCopy;
         fallbackHandler = _fallbackHandler;
 
-        domainSeparator =
-            keccak256(abi.encode(DOMAIN_TYPEHASH, keccak256(bytes(NAME)), _getChainIdInternal(), address(this)));
+        _CACHED_CHAIN_ID = block.chainid;
+        _CACHED_DOMAIN_SEPARATOR = _computeDomainSeparator();
+    }
+
+    /// @notice Returns the current EIP-712 domain separator.
+    /// @dev Returns the cached value on the origin chain; recomputes if the
+    /// chain has forked (block.chainid changed since deployment).
+    function domainSeparator() external view returns (bytes32) {
+        return _domainSeparator();
     }
 
     function proxyCreationCode() public pure returns (bytes memory) {
@@ -67,11 +93,27 @@ contract SafeProxyFactory {
         return address(uint160(uint256(_data)));
     }
 
-    function createProxy(address paymentToken, uint256 payment, address payable paymentReceiver, Sig calldata createSig)
-        external
-    {
-        address owner = _getSigner(paymentToken, payment, paymentReceiver, createSig);
+    function createProxy(
+        address paymentToken,
+        uint256 payment,
+        address payable paymentReceiver,
+        uint256 nonce,
+        uint256 deadline,
+        Sig calldata createSig
+    ) external {
+        require(block.timestamp <= deadline, "SafeProxyFactory: signature expired");
 
+        address owner = _getSigner(paymentToken, payment, paymentReceiver, nonce, deadline, createSig);
+        require(nonces[owner]++ == nonce, "SafeProxyFactory: invalid nonce");
+
+        _deploySafeFor(owner, paymentToken, payment, paymentReceiver);
+    }
+
+    /// @dev Deploys a 1-of-1 Safe for `owner` via CREATE2 and initializes it.
+    /// Split out of `createProxy` to keep stack depth under the Solidity 0.8.4 limit.
+    function _deploySafeFor(address owner, address paymentToken, uint256 payment, address payable paymentReceiver)
+        private
+    {
         GnosisSafe proxy;
         bytes memory deploymentData = getContractBytecode();
         bytes32 salt = getSalt(owner);
@@ -81,29 +123,39 @@ contract SafeProxyFactory {
         }
         require(address(proxy) != address(0), "create2 call failed");
 
-        {
-            address[] memory owners = new address[](1);
-            owners[0] = owner;
-            proxy.setup(owners, 1, address(0), "", fallbackHandler, paymentToken, payment, paymentReceiver);
-        }
+        address[] memory owners = new address[](1);
+        owners[0] = owner;
+        proxy.setup(owners, 1, address(0), "", fallbackHandler, paymentToken, payment, paymentReceiver);
 
         emit ProxyCreation(proxy, owner);
     }
 
-    function _getSigner(address paymentToken, uint256 payment, address payable paymentReceiver, Sig calldata sig)
-        internal
-        view
-        returns (address)
-    {
-        bytes32 structHash = keccak256(abi.encode(CREATE_PROXY_TYPEHASH, paymentToken, payment, paymentReceiver));
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+    function _getSigner(
+        address paymentToken,
+        uint256 payment,
+        address payable paymentReceiver,
+        uint256 nonce,
+        uint256 deadline,
+        Sig calldata sig
+    ) internal view returns (address) {
+        bytes32 structHash = keccak256(
+            abi.encode(CREATE_PROXY_TYPEHASH, paymentToken, payment, paymentReceiver, nonce, deadline)
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
 
         return ECDSA.recover(digest, sig.v, sig.r, sig.s);
     }
 
-    function _getChainIdInternal() internal view returns (uint256) {
-        uint256 chainId;
-        assembly { chainId := chainid() }
-        return chainId;
+    function _domainSeparator() internal view returns (bytes32) {
+        if (block.chainid == _CACHED_CHAIN_ID) {
+            return _CACHED_DOMAIN_SEPARATOR;
+        }
+        return _computeDomainSeparator();
+    }
+
+    function _computeDomainSeparator() private view returns (bytes32) {
+        return keccak256(
+            abi.encode(DOMAIN_TYPEHASH, keccak256(bytes(NAME)), keccak256(bytes(VERSION)), block.chainid, address(this))
+        );
     }
 }
