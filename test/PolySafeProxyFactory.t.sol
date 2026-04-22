@@ -212,6 +212,40 @@ contract PolySafeProxyFactoryTest is Test {
         factory.createProxy(paymentToken, payment, paymentReceiver, nonce, deadline, SafeProxyFactory.Sig(v, r, s));
     }
 
+    // ── M-11: Zero paymentReceiver with non-zero payment ────────────
+
+    /// @dev Non-zero payment with paymentReceiver == address(0) must revert.
+    /// Gnosis Safe routes such payments to tx.origin, which is front-runnable.
+    function test_CreateProxy_RevertsOnZeroReceiverWithPayment() public {
+        (, uint256 signerKey) = makeAddrAndKey("m11-signer");
+
+        address paymentToken = address(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);
+        uint256 payment = 1 ether;
+        address payable paymentReceiver = payable(address(0)); // zero receiver!
+        uint256 nonce = factory.nonces(vm.addr(signerKey));
+        uint256 deadline = block.timestamp + 1 hours;
+
+        bytes32 structHash = keccak256(
+            abi.encode(factory.CREATE_PROXY_TYPEHASH(), paymentToken, payment, paymentReceiver, nonce, deadline)
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", factory.domainSeparator(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, digest);
+
+        vm.expectRevert("SafeProxyFactory: zero receiver with non-zero payment");
+        factory.createProxy(paymentToken, payment, paymentReceiver, nonce, deadline, SafeProxyFactory.Sig(v, r, s));
+    }
+
+    /// @dev Zero payment with paymentReceiver == address(0) is fine (no money moves).
+    function test_CreateProxy_AllowsZeroReceiverWithZeroPayment() public {
+        (, uint256 signerKey) = makeAddrAndKey("m11-zero-payment");
+
+        // This is the normal no-payment case used throughout tests — should succeed
+        _deployProxy(signerKey);
+
+        address predicted = factory.computeProxyAddress(vm.addr(signerKey));
+        assertTrue(predicted.code.length > 0, "Safe should deploy when payment=0 and receiver=0");
+    }
+
     /// @dev Proves that the dynamic domain separator prevents a signature signed
     /// on the origin chain from deploying the *victim's* Safe on a forked chain.
     ///

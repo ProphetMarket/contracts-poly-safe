@@ -103,6 +103,14 @@ contract SafeProxyFactory {
     ) external {
         require(block.timestamp <= deadline, "SafeProxyFactory: signature expired");
 
+        // M-11: If payment is non-zero, require an explicit receiver.
+        // Gnosis Safe's setup() routes payment to tx.origin when paymentReceiver == address(0),
+        // which is front-runnable on public mempools.
+        require(
+            payment == 0 || paymentReceiver != address(0),
+            "SafeProxyFactory: zero receiver with non-zero payment"
+        );
+
         address owner = _getSigner(paymentToken, payment, paymentReceiver, nonce, deadline, createSig);
         require(nonces[owner]++ == nonce, "SafeProxyFactory: invalid nonce");
 
