@@ -112,6 +112,13 @@ contract SafeProxyFactory {
         );
 
         address owner = _getSigner(paymentToken, payment, paymentReceiver, nonce, deadline, createSig);
+
+        // M-08: ECDSA.recover returns address(0) for malformed signatures.
+        // Without this check, nonces[address(0)] (starting at 0) trivially passes
+        // and a Safe is deployed with address(0) as owner, permanently occupying
+        // the CREATE2 slot.
+        require(owner != address(0), "SafeProxyFactory: invalid signature");
+
         require(nonces[owner]++ == nonce, "SafeProxyFactory: invalid nonce");
 
         _deploySafeFor(owner, paymentToken, payment, paymentReceiver);
@@ -145,7 +152,7 @@ contract SafeProxyFactory {
         uint256 nonce,
         uint256 deadline,
         Sig calldata sig
-    ) internal view returns (address) {
+    ) internal virtual view returns (address) {
         bytes32 structHash = keccak256(
             abi.encode(CREATE_PROXY_TYPEHASH, paymentToken, payment, paymentReceiver, nonce, deadline)
         );

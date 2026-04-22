@@ -212,6 +212,51 @@ contract PolySafeProxyFactoryTest is Test {
         factory.createProxy(paymentToken, payment, paymentReceiver, nonce, deadline, SafeProxyFactory.Sig(v, r, s));
     }
 
+    // ── M-08: Zero-address guard after ECDSA recovery ────────────────
+
+    /// @dev A malformed signature must be rejected before deploying a Safe.
+    /// OpenZeppelin's ECDSA.recover reverts on (r=0, s=0), providing first-layer
+    /// protection. Our explicit `owner != address(0)` guard is defense-in-depth
+    /// for any future ECDSA library swap that might return zero instead of reverting.
+    function test_CreateProxy_RevertsOnMalformedSignature() public {
+        address paymentToken = address(0);
+        uint256 payment = 0;
+        address payable paymentReceiver = payable(address(0));
+        uint256 nonce = 0; // nonces[address(0)] starts at 0, so nonce check would pass
+        uint256 deadline = block.timestamp + 1 hours;
+
+        SafeProxyFactory.Sig memory badSig = SafeProxyFactory.Sig(27, bytes32(0), bytes32(0));
+
+        // Reverts via ECDSA library (first layer) before reaching our guard
+        vm.expectRevert("ECDSA: invalid signature");
+        factory.createProxy(paymentToken, payment, paymentReceiver, nonce, deadline, badSig);
+    }
+
+    /// @dev Malformed signatures must not increment the nonce for address(0).
+    function test_CreateProxy_MalformedSig_DoesNotIncrementNonce() public {
+        uint256 nonceBefore = factory.nonces(address(0));
+
+        SafeProxyFactory.Sig memory badSig = SafeProxyFactory.Sig(28, bytes32(0), bytes32(0));
+
+        vm.expectRevert();
+        factory.createProxy(address(0), 0, payable(address(0)), 0, block.timestamp + 1 hours, badSig);
+
+        assertEq(factory.nonces(address(0)), nonceBefore, "nonce for address(0) must not change");
+    }
+
+    /// @dev Verify the defense-in-depth guard: if _getSigner somehow returns
+    /// address(0) (bypassing ECDSA's own checks), createProxy must still revert.
+    /// We test this by deploying a factory wrapper that overrides _getSigner.
+    function test_CreateProxy_RevertsWhenSignerIsZeroAddress() public {
+        // Deploy the mock factory that always returns address(0) from _getSigner
+        ZeroSignerFactory mockFactory = new ZeroSignerFactory(address(singleton), address(fallbackHandler));
+
+        SafeProxyFactory.Sig memory anySig = SafeProxyFactory.Sig(27, bytes32(uint256(1)), bytes32(uint256(1)));
+
+        vm.expectRevert("SafeProxyFactory: invalid signature");
+        mockFactory.createProxy(address(0), 0, payable(address(0)), 0, block.timestamp + 1 hours, anySig);
+    }
+
     // ── M-11: Zero paymentReceiver with non-zero payment ────────────
 
     /// @dev Non-zero payment with paymentReceiver == address(0) must revert.
@@ -296,5 +341,23 @@ contract PolySafeProxyFactoryTest is Test {
             // Revert path is also acceptable: victim's address stays uninitialized.
             assertEq(victimPredicted.code.length, 0, "victim's Safe should remain undeployed after revert");
         }
+    }
+}
+
+/// @dev Mock factory that overrides _getSigner to always return address(0),
+/// simulating a scenario where ECDSA recovery silently returns zero.
+/// Used to verify the defense-in-depth guard in createProxy (M-08).
+contract ZeroSignerFactory is SafeProxyFactory {
+    constructor(address _masterCopy, address _fallbackHandler)
+        SafeProxyFactory(_masterCopy, _fallbackHandler)
+    {}
+
+    function _getSigner(address, uint256, address payable, uint256, uint256, Sig calldata)
+        internal
+        pure
+        override
+        returns (address)
+    {
+        return address(0);
     }
 }
